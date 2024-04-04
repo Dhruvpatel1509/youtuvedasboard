@@ -1,50 +1,47 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
+import mysql.connector
+import base64
 
+# Connect to MySQL database
+def connect_to_database():
+    return mysql.connector.connect(
+        host="localhost",
+        user="root",  
+        password="",  
+        database="scheduler"  
+    )
 
-########################################################################################################################
-#                                       FUNCTIONS
-########################################################################################################################
-# Function to suggest the next publishing date
 def suggest_next_publish_date(video_data):
     video_data['published_date'] = pd.to_datetime(video_data['published_date'])
     df_sorted = video_data.sort_values(by='published_date', ascending=False)
     average_diff = (df_sorted['published_date'] - df_sorted['published_date'].shift(-1)).mean()
     return df_sorted['published_date'].iloc[0] + average_diff
 
+def insert_video_to_database(title, description, schedule_date, schedule_time):
+    try:
+        conn = connect_to_database()
+        cursor = conn.cursor()
 
-########################################################################################################################
-#                                       SCHEDULED POST DB CONFIG
-########################################################################################################################
-# Excel filepath
-EXCEL_DB = 'scheduled_posts.xlsx'
+        sql = "INSERT INTO scheduled_videos (title, description, schedule_date, schedule_time) VALUES (%s, %s, %s, %s)"
+        val = (title, description, schedule_date, schedule_time)
+        cursor.execute(sql, val)
 
-# Try to read the Excel file, if it doesn't exist, create a new DataFrame
-try:
-    df = pd.read_excel(EXCEL_DB)
-except FileNotFoundError:
-    columns = ["title", "description", "date", "time"]
-    df = pd.DataFrame(columns=columns)
-    df.to_excel(EXCEL_DB, index=False)  # Create the Excel file with the columns
+        conn.commit()
+        st.success("Video scheduled and saved to the database successfully.")
 
-########################################################################################################################
-#                                       PAGE CONFIGURATION
-########################################################################################################################
-st.set_page_config(page_title="Content Publishing Calender",
-                   page_icon="📊",
-                   layout="wide")
+    except mysql.connector.Error as e:
+        st.error(f"Error inserting video into the database: {e}")
 
-# Load video data
-video_data = pd.read_excel('all_video_Data.xlsx')  # Replace with your video data file path
-
-# Get the suggested date
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+           
+video_data = pd.read_excel('all_video_Data.xlsx')  
 suggested_date = suggest_next_publish_date(video_data)
 
-########################################################################################################################
-#                                       PAGE CONTENT CONFIGURATION
-########################################################################################################################
-# Display the suggested date with enhanced styling
 st.markdown(f"""
 <style>
     .suggested-date {{
@@ -56,26 +53,33 @@ st.markdown(f"""
         text-align: center;
     }}
 </style>
-<div class="suggested-date">Suggested next publishing date: {suggested_date.strftime('%Y-%m-%d %H:%M:%S')}</div>
+<div class="suggested-date">Suggested next publishing time: {suggested_date.strftime('%H:%M:%S')}</div>
 """, unsafe_allow_html=True)
 
-# Input fields
+
 video_title = st.text_input("Video Title")
 video_description = st.text_area("Video Description")
-schedule_date = st.date_input("Schedule Date", suggested_date.date())  # Default to the suggested date
+schedule_date = st.date_input("Schedule Date", datetime.today())  
 schedule_time = st.time_input("Schedule Time")
 
 if st.button("Schedule Video"):
-    # Append to DataFrame and save back to Excel
-    df = df.append({
-        "title": video_title,
-        "description": video_description,
-        "date": schedule_date,
-        "time": schedule_time
-    }, ignore_index=True)
-    df.to_excel(EXCEL_DB, index=False)
-    st.success("Video scheduled!")
+
+    insert_video_to_database(video_title, video_description, schedule_date, schedule_time)
 
 # Display scheduled posts
 st.subheader("Scheduled Videos")
-st.table(df)
+try:
+    conn = connect_to_database()
+    df = pd.read_sql("SELECT * FROM scheduled_videos", conn)
+    conn.close()
+
+    df['schedule_time'] = df['schedule_time'].astype(str)
+
+    st.table(df)
+except Exception as e:
+    st.error("Error fetching scheduled videos from the database.")  
+
+csv = df.to_csv(index=False)
+b64 = base64.b64encode(csv.encode()).decode() 
+csv_link = f'<a href="data:file/csv;base64,{b64}" download="scheduled_videos.csv">Download CSV File</a>'
+st.markdown(csv_link, unsafe_allow_html=True)
